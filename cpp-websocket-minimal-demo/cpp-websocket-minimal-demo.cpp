@@ -55,7 +55,7 @@ int main() {
     app.get("/*", [&connManager](auto* res, auto* req) {
         res->writeStatus("200 OK")
             ->writeHeader("Content-Type", "text/html")
-            ->end(R"(<head>GrainX CDY</head>)");
+            ->end(R"(<head>GrainX</head>)");
         });
     // 视频流推送线程
     thread([&connManager]() {
@@ -98,7 +98,7 @@ int main() {
                 }
             }
 
-            this_thread::sleep_for(25ms);
+            this_thread::sleep_for(50ms);
         }
         }).detach();
 
