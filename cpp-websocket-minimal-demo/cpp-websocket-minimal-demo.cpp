@@ -31,6 +31,11 @@ int main() {
             }
             cout << "WebSocket连接建立，当前连接数: " << connManager.connections.size() << endl;
         },
+        .message = [](auto* ws, auto message, auto opCode) {
+            // 处理消息（示例：打印并回传）
+            std::cout << "Received: " << message << std::endl;
+            ws->send(message, opCode);
+        },
         .close = [&connManager](auto* ws, int code, string_view message) {
             {
                 lock_guard<mutex> lock(connManager.connectionMutex);
@@ -47,33 +52,11 @@ int main() {
             ->end(R"({"status": "running", "clients": ")" + to_string(connManager.connections.size()) + "\"}");
         });
 
-    app.get("/", [](auto* res, auto* req) {
+    app.get("/*", [&connManager](auto* res, auto* req) {
         res->writeStatus("200 OK")
             ->writeHeader("Content-Type", "text/html")
-            ->end(R"(
-<html>
-<body>
-    <h1>实时视频监控</h1>
-    <img id="videoFeed" width="640" height="480">
-    <script>
-        const ws = new WebSocket('ws://localhost:9001/');
-        ws.binaryType = 'arraybuffer';
-        
-        ws.onmessage = function(event) {
-            if (typeof event.data === 'string') {
-                console.log('收到数据:', event.data);
-            } else {
-                const blob = new Blob([event.data], {type: 'image/jpeg'});
-                const url = URL.createObjectURL(blob);
-                document.getElementById('videoFeed').src = url;
-            }
-        };
-    </script>
-</body>
-</html>
-)");
+            ->end(R"(<head>GrainX CDY</head>)");
         });
-
     // 视频流推送线程
     thread([&connManager]() {
         cv::VideoCapture cap(0); // 使用摄像头，测试时可生成虚拟图像
@@ -86,23 +69,32 @@ int main() {
             cv::Mat frame;
             cap >> frame;
             if (frame.empty()) continue;
+            cv::resize(frame, frame, cv::Size(300, 300));
+            // 生成灰度图
+            cv::Mat grayFrame;
+            cv::cvtColor(frame, grayFrame, cv::COLOR_BGR2GRAY);
 
             // 编码为JPEG
-            vector<uchar> jpegBuffer;
-            cv::imencode(".jpg", frame, jpegBuffer, { cv::IMWRITE_JPEG_QUALITY, 80 });
+            vector<uchar> colorBuf, grayBuf;
+            cv::imencode(".jpg", frame, colorBuf, { cv::IMWRITE_JPEG_QUALITY, 80 });
+            cv::imencode(".jpg", grayFrame, grayBuf, { cv::IMWRITE_JPEG_QUALITY, 80 });
+            // 添加2字节标识头
+            vector<uchar> colorPacket(2 + colorBuf.size());
+            colorPacket[0] = 0x00; // 类型标识高位
+            colorPacket[1] = 0x01; // 原始帧标识
+            memcpy(&colorPacket[2], colorBuf.data(), colorBuf.size());
 
-            // 创建JSON数据
-            auto timestamp = chrono::duration_cast<chrono::milliseconds>(
-                chrono::system_clock::now().time_since_epoch()
-            ).count();
-            string jsonData = R"({"type": "frameInfo", "timestamp": )" + to_string(timestamp) + "}";
+            vector<uchar> grayPacket(2 + grayBuf.size());
+            grayPacket[0] = 0x00;
+            grayPacket[1] = 0x02; // 灰度帧标识
+            memcpy(&grayPacket[2], grayBuf.data(), grayBuf.size());
 
-            // 广播数据
+            // 发送二进制数据
             {
                 lock_guard<mutex> lock(connManager.connectionMutex);
                 for (auto ws : connManager.connections) {
-                    ws->send(string_view((char*)jpegBuffer.data(), jpegBuffer.size()), uWS::BINARY);
-                    ws->send(jsonData, uWS::TEXT);
+                    ws->send(string_view((char*)colorPacket.data(), colorPacket.size()), uWS::BINARY);
+                    ws->send(string_view((char*)grayPacket.data(), grayPacket.size()), uWS::BINARY);
                 }
             }
 
